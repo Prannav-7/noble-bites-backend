@@ -7,11 +7,17 @@ import { db, auth, storage } from './firebaseConfig.js';
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// Initialize Razorpay
-const razorpay = new Razorpay({
-    key_id: process.env.RAZORPAY_KEY_ID,
-    key_secret: process.env.RAZORPAY_KEY_SECRET,
-});
+// Razorpay is initialized lazily inside route handlers
+// to prevent server crash if env vars are missing on first deploy
+const getRazorpay = () => {
+    if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
+        throw new Error('Razorpay keys not configured. Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET env vars.');
+    }
+    return new Razorpay({
+        key_id: process.env.RAZORPAY_KEY_ID,
+        key_secret: process.env.RAZORPAY_KEY_SECRET,
+    });
+};
 
 // Middleware
 app.use(cors());
@@ -1152,6 +1158,18 @@ app.post('/api/admin/sync-review-counts', async (req, res) => {
 // RAZORPAY PAYMENT ROUTES
 // ============================================
 
+// Diagnostic route — check if Razorpay keys are loaded on the server
+app.get('/api/payment/status', (req, res) => {
+    const keyId = process.env.RAZORPAY_KEY_ID;
+    const keySecret = process.env.RAZORPAY_KEY_SECRET;
+    res.json({
+        success: true,
+        razorpay_key_id_set: !!keyId,
+        razorpay_key_id_prefix: keyId ? keyId.substring(0, 8) + '...' : null,
+        razorpay_key_secret_set: !!keySecret,
+    });
+});
+
 // Create Razorpay Order
 app.post('/api/payment/create-order', async (req, res) => {
     try {
@@ -1170,6 +1188,7 @@ app.post('/api/payment/create-order', async (req, res) => {
         console.log('--- Creating Razorpay Order ---');
         console.log('Options:', options);
 
+        const razorpay = getRazorpay();
         const order = await razorpay.orders.create(options);
 
         console.log('Order Created:', order);
@@ -1190,6 +1209,9 @@ app.post('/api/payment/verify-payment', async (req, res) => {
     try {
         const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
 
+        if (!process.env.RAZORPAY_KEY_SECRET) {
+            return res.status(500).json({ success: false, error: 'RAZORPAY_KEY_SECRET not configured on server' });
+        }
         const sign = razorpay_order_id + "|" + razorpay_payment_id;
         const expectedSign = crypto
             .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
